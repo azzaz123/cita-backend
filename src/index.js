@@ -35,24 +35,25 @@ app.post('/api/notify-codigo', async (req, res) => {
 
   try {
     console.log(`   📨 Enviando mensaje a user_id: ${user_id} con código: ${codigo}`);
-    
+
     const msg = `✅ *PAGO CONFIRMADO*\n\n¡Gracias por tu compra!\n\nTu código PREMIUM es:\n\n━━━━━━━━━━━━━━━━━━━━━━\n    *${codigo}*\n━━━━━━━━━━━━━━━━━━━━━━\n\n▸ Válido por 3 meses desde su activación\n▸ Úsalo en la app para activar\n\n🕐 Soporte: L-V de 9:00 a 18:00`;
-    
+
     await bot.sendMessage(user_id, msg, { parse_mode: 'Markdown' });
-    
+
     console.log('   ✅ [BOT HTTP] ¡Mensaje enviado a Telegram con éxito!');
     console.log('========================================\n');
     res.json({ success: true });
-    
+
   } catch (err) {
     console.error('   ❌ [BOT HTTP] ERROR al enviar el mensaje por Telegram:', err.message);
     console.log('========================================\n');
     res.status(500).json({ error: err.message });
   }
 });
-const PORT = process.env.PORT_BOT || 8080;
-app.listen(PORT, () => {
-  logger.info(`🚀 Servidor interno del bot escuchando en http://localhost:${PORT}`);
+
+const PORT = process.env.PORT || process.env.PORT_BOT || 8080;
+app.listen(PORT, '0.0.0.0', () => {
+  logger.info(`🚀 Servidor interno del bot escuchando en puerto ${PORT}`);
 });
 
 process.on('unhandledRejection', (err) => logger.error({ err }, 'Unhandled'));

@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { redis, rateLimit, cooldown } from './redis.js';
 import { logger } from './logger.js';
 
@@ -9,6 +10,12 @@ const BIENVENIDA_TTL_SEC = 7 * 24 * 60 * 60;
 const FIRMA = '────────────────────────\nAsistente de Activación';
 const SOPORTE = '🕐 Soporte: L-V de 9:00 a 18:00';
 const PRECIO = '25€';
+
+// ─── DESCARGA ───
+const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET;
+const BACKEND_URL = process.env.BACKEND_URL || 'https://automate-9ij2.onrender.com';
+const DOWNLOAD_TOKEN_TTL = parseInt(process.env.DOWNLOAD_TOKEN_TTL || '900000'); // 15 min
+const DOWNLOAD_ONLY_BUYERS = process.env.DOWNLOAD_ONLY_BUYERS === 'true';
 
 // ─── PLANTILLAS ───
 
@@ -78,6 +85,7 @@ function msgAyuda() {
     `Comandos:\n\n` +
     `▸ /codigo — comprar o ver tu código\n` +
     `▸ /miscompras — historial de compras\n` +
+    `▸ /descargar — descargar la app\n` +
     `▸ /ayuda — este mensaje\n\n` +
     `${SOPORTE}\n\n` +
     `${FIRMA}`
@@ -146,12 +154,104 @@ async function marcarEntregado(userId, codigo) {
   } catch (err) {}
 }
 
+// ─── GENERACIÓN DE TOKEN DE DESCARGA ───
+
+function generarTokenDescarga(userId) {
+  if (!DOWNLOAD_SECRET) {
+    throw new Error('DOWNLOAD_SECRET no configurado');
+  }
+  const payload = {
+    uid: String(userId),
+    exp: Date.now() + DOWNLOAD_TOKEN_TTL,
+    iat: Date.now(),
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const firma = crypto
+    .createHmac('sha256', DOWNLOAD_SECRET)
+    .update(payloadB64)
+    .digest('base64url');
+  return { token: `${payloadB64}.${firma}`, exp: payload.exp };
+}
+
+// ─── COMANDO /descargar ───
+
+export async function procesarDescarga(bot, chatId, userId, username) {
+  try {
+    // 1. Rate-limit: 3 peticiones por minuto
+    const rl = await rateLimit(`tg:rl:descargar:${userId}`, 3, 60);
+    if (!rl.allowed) {
+      await enviar(bot, chatId, '⏳ Demasiadas peticiones. Espera un momento.');
+      return;
+    }
+
+    // 2. Solo permitir a compradores (si DOWNLOAD_ONLY_BUYERS=true)
+    if (DOWNLOAD_ONLY_BUYERS) {
+      const compras = await obtenerMisCompras(userId);
+      if (!compras || compras.length === 0) {
+        await enviar(bot, chatId,
+          '⚠️ *ACCESO RESTRINGIDO*\n\n' +
+          'Necesitas comprar un código primero para descargar la app.\n\n' +
+          'Usa /codigo para comprar tu código.\n\n' +
+          `${SOPORTE}\n\n${FIRMA}`
+        );
+        return;
+      }
+    }
+
+    // 3. Verificar DOWNLOAD_SECRET
+    if (!DOWNLOAD_SECRET) {
+      await enviar(bot, chatId, '⚠️ La descarga no está configurada. Contacta con soporte.');
+      return;
+    }
+
+    // 4. Generar token firmado
+    const { token, exp } = generarTokenDescarga(userId);
+
+    // 5. Registrar el token en el backend (un solo uso)
+    try {
+      await fetch(`${BACKEND_URL}/api/download/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.API_KEY,
+        },
+        body: JSON.stringify({ token, exp, uid: String(userId) }),
+      });
+    } catch (err) {
+      logger.error({ err }, 'Error registrando token de descarga');
+    }
+
+    // 6. Enviar el enlace con el token
+    const url = `${BACKEND_URL}/api/download/${encodeURIComponent(token)}`;
+    const minutos = Math.round(DOWNLOAD_TOKEN_TTL / 60000);
+
+    const msg =
+      `📥 *DESCARGA DE LA APP*\n\n` +
+      `Pulsa el botón para descargar la app.\n\n` +
+      `▸ Enlace válido durante *${minutos} minutos*\n` +
+      `▸ Solo se puede usar *una vez*\n` +
+      `▸ Si caduca, usa /descargar de nuevo\n\n` +
+      `⚠️ *Importante*: después de descargar, abre el archivo .apk en tu Android para instalarla. Tendrás que permitir "instalar apps de origen desconocido".\n\n` +
+      `${SOPORTE}\n\n${FIRMA}`;
+
+    await enviar(bot, chatId, msg, {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📥 Descargar APK', url }]],
+      },
+    });
+
+    logger.info({ userId, username }, '📥 Enlace de descarga generado');
+  } catch (err) {
+    logger.error({ err, userId }, 'Error generando descarga');
+    await enviar(bot, chatId, msgError());
+  }
+}
+
 // ─── COMANDOS ───
 
 export async function procesarComando(bot, chatId, userId, username, comando, param) {
   if (comando === 'start') {
     if (param === 'pago_ok') {
-      // El código real llegará por el webhook del servidor
       return;
     }
     if (param === 'pago_cancel') {
@@ -163,7 +263,10 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
     if (primeraVez) {
       await enviar(bot, chatId, msgBienvenida(), {
         reply_markup: {
-          inline_keyboard: [[{ text: `💳 Comprar código - ${PRECIO}`, callback_data: 'comprar' }]],
+          inline_keyboard: [
+            [{ text: `💳 Comprar código - ${PRECIO}`, callback_data: 'comprar' }],
+            [{ text: '📥 Descargar app', callback_data: 'descargar' }],
+          ],
         },
       });
     } else {
@@ -176,7 +279,12 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
         }
       } else {
         await enviar(bot, chatId, '👋 Bienvenido de vuelta.\n\nUsa /codigo para comprar tu código.', {
-          reply_markup: { inline_keyboard: [[{ text: '💳 Comprar código', callback_data: 'comprar' }]] },
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '💳 Comprar código', callback_data: 'comprar' }],
+              [{ text: '📥 Descargar app', callback_data: 'descargar' }],
+            ],
+          },
         });
       }
     }
@@ -203,6 +311,11 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
     await iniciarCompra(bot, chatId, userId, username);
     return;
   }
+
+  if (comando === 'descargar') {
+    await procesarDescarga(bot, chatId, userId, username);
+    return;
+  }
 }
 
 export async function procesarMensaje(bot, chatId, userId, username, texto) {
@@ -221,11 +334,20 @@ export async function procesarMensaje(bot, chatId, userId, username, texto) {
     await enviar(bot, chatId, msgMisCompras(compras));
     return;
   }
+  if (['descargar', 'descarga', 'apk'].some((p) => textoNorm.includes(p))) {
+    await procesarDescarga(bot, chatId, userId, username);
+    return;
+  }
 
   const primeraVez = await esPrimeraVez(userId);
   if (primeraVez) {
     await enviar(bot, chatId, msgBienvenida(), {
-      reply_markup: { inline_keyboard: [[{ text: `💳 Comprar código - ${PRECIO}`, callback_data: 'comprar' }]] },
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: `💳 Comprar código - ${PRECIO}`, callback_data: 'comprar' }],
+          [{ text: '📥 Descargar app', callback_data: 'descargar' }],
+        ],
+      },
     });
   }
 }
