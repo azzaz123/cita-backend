@@ -73,6 +73,32 @@ export function iniciarTelegram() {
   return bot;
 }
 
+bot.onText(/\/descargar/, async (msg) => {
+  await procesarDescarga(
+    bot,
+    msg.chat.id,
+    msg.from.id,
+    msg.from.username || msg.from.first_name || 'Usuario'
+  );
+});
+
+// Y en callback_query, añade el caso 'descargar':
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const userId = query.from.id;
+  const username = query.from.username || query.from.first_name || 'Usuario';
+  const data = query.data;
+
+  await bot.answerCallbackQuery(query.id);
+
+  if (data === 'comprar') {
+    await procesarComando(bot, chatId, userId, username, 'comprar', null);
+  } else if (data === 'ayuda') {
+    await procesarComando(bot, chatId, userId, username, 'ayuda', null);
+  } else if (data === 'descargar') {
+    await procesarDescarga(bot, chatId, userId, username);
+  }
+});
 export function getBot() {
   return bot;
 }
