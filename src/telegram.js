@@ -1,6 +1,6 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { logger } from './logger.js';
-import { procesarComando, procesarMensaje, procesarDescarga } from './handlers.js';
+import { procesarComando, procesarMensaje, procesarDescarga, procesarInstall } from './handlers.js';
 
 let bot;
 
@@ -34,12 +34,22 @@ export function iniciarTelegram() {
     await procesarComando(bot, msg.chat.id, msg.from.id, msg.from.username, 'ayuda', null);
   });
 
+  // /install
+  bot.onText(/\/(install|instalar)/, async (msg) => {
+    await procesarInstall(
+      bot,
+      msg.chat.id,
+      msg.from.id,
+      msg.from.username || msg.from.first_name || 'Usuario'
+    );
+  });
+
   // /miscompras
   bot.onText(/\/miscompras/, async (msg) => {
     await procesarComando(bot, msg.chat.id, msg.from.id, msg.from.username, 'miscompras', null);
   });
 
-  // /descargar  ← DENTRO de iniciarTelegram
+  // /descargar
   bot.onText(/\/descargar/, async (msg) => {
     await procesarDescarga(
       bot,
@@ -61,7 +71,7 @@ export function iniciarTelegram() {
     );
   });
 
-  // Callback queries (LOS BOTONES)  ← UN SOLO handler, DENTRO
+  // Callback queries (LOS BOTONES)
   bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const userId = query.from.id;
@@ -78,8 +88,9 @@ export function iniciarTelegram() {
     } else if (data === 'ayuda') {
       await procesarComando(bot, chatId, userId, username, 'ayuda', null);
     } else if (data === 'descargar') {
-      // NUEVO: botón "📥 Descargar app"
       await procesarDescarga(bot, chatId, userId, username);
+    } else if (data === 'install') {
+      await procesarInstall(bot, chatId, userId, username);
     }
   });
 

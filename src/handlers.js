@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import { redis, rateLimit, cooldown } from './redis.js';
 import { logger } from './logger.js';
+import fs from 'fs';
+import path from 'path';
 
 const COOLDOWN_MS = 5000;
 const RATE_MAX = 10;
@@ -16,6 +18,9 @@ const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET;
 const BACKEND_URL = process.env.BACKEND_URL || 'https://automate-9ij2.onrender.com';
 const DOWNLOAD_TOKEN_TTL = parseInt(process.env.DOWNLOAD_TOKEN_TTL || '900000'); // 15 min
 const DOWNLOAD_ONLY_BUYERS = process.env.DOWNLOAD_ONLY_BUYERS === 'true';
+
+// ─── INSTALL VIDEO ───
+const INSTALL_VIDEO_PATH = process.env.INSTALL_VIDEO_PATH || 'videos/install.mp4';
 
 // ─── PLANTILLAS ───
 
@@ -83,6 +88,7 @@ function msgAyuda() {
   return (
     `ℹ️ AYUDA\n\n` +
     `Comandos:\n\n` +
+    `▸ /install — ver tutorial de instalación\n` +
     `▸ /codigo — comprar o ver tu código\n` +
     `▸ /miscompras — historial de compras\n` +
     `▸ /descargar — descargar la app\n` +
@@ -247,6 +253,66 @@ export async function procesarDescarga(bot, chatId, userId, username) {
   }
 }
 
+// ─── COMANDO /install (vídeo de instalación) ───
+
+export async function procesarInstall(bot, chatId, userId, username) {
+  try {
+    // Rate-limit: 3 peticiones por minuto
+    const rl = await rateLimit(`tg:rl:install:${userId}`, 3, 60);
+    if (!rl.allowed) {
+      await enviar(bot, chatId, '⏳ Demasiadas peticiones. Espera un momento.');
+      return;
+    }
+
+    // Comprobar que el vídeo existe
+    const videoPath = path.isAbsolute(INSTALL_VIDEO_PATH)
+      ? INSTALL_VIDEO_PATH
+      : path.join(process.cwd(), INSTALL_VIDEO_PATH);
+
+    if (!fs.existsSync(videoPath)) {
+      logger.error({ videoPath }, 'Vídeo de instalación no encontrado');
+      await enviar(bot, chatId, '⚠️ El vídeo de instalación no está disponible ahora mismo. Inténtalo más tarde.');
+      return;
+    }
+
+    const stats = fs.statSync(videoPath);
+    const sizeMB = (stats.size / (1024 * 1024)).toFixed(1);
+
+    // Límite de Telegram: 50 MB por archivo en bots
+    if (stats.size > 50 * 1024 * 1024) {
+      logger.error({ sizeMB }, 'Vídeo supera el límite de Telegram');
+      await enviar(bot, chatId,
+        `⚠️ El vídeo pesa ${sizeMB} MB y supera el límite de Telegram (50 MB).\n\n` +
+        `Contacta con soporte para recibirlo por otro medio.\n\n${SOPORTE}`
+      );
+      return;
+    }
+
+    // Mensaje previo
+    await enviar(bot, chatId,
+      `🎬 *TUTORIAL DE INSTALACIÓN*\n\n` +
+      `Te envío un vídeo con los pasos para instalar la app.\n\n` +
+      `▸ Descarga el archivo .apk desde /descargar\n` +
+      `▸ Ábrelo en tu Android\n` +
+      `▸ Permite "instalar apps de origen desconocido"\n` +
+      `▸ Sigue los pasos del vídeo\n\n` +
+      `${SOPORTE}\n\n${FIRMA}`
+    );
+
+    // Enviar el vídeo como documento de vídeo (el usuario NO ve URL)
+    await bot.sendVideo(chatId, videoPath, {
+      caption: `📱 *Instalación de Cita Previa* (${sizeMB} MB)\n\nSigue los pasos del vídeo.`,
+      parse_mode: 'Markdown',
+      supports_streaming: true,
+    });
+
+    logger.info({ userId, username, sizeMB }, '🎬 Vídeo de instalación enviado');
+  } catch (err) {
+    logger.error({ err, userId }, 'Error enviando vídeo de instalación');
+    await enviar(bot, chatId, msgError());
+  }
+}
+
 // ─── COMANDOS ───
 
 export async function procesarComando(bot, chatId, userId, username, comando, param) {
@@ -264,6 +330,7 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
       await enviar(bot, chatId, msgBienvenida(), {
         reply_markup: {
           inline_keyboard: [
+            [{ text: '🎬 Ver tutorial de instalación', callback_data: 'install' }],
             [{ text: `💳 Comprar código - ${PRECIO}`, callback_data: 'comprar' }],
             [{ text: '📥 Descargar app', callback_data: 'descargar' }],
           ],
@@ -281,6 +348,7 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
         await enviar(bot, chatId, '👋 Bienvenido de vuelta.\n\nUsa /codigo para comprar tu código.', {
           reply_markup: {
             inline_keyboard: [
+              [{ text: '🎬 Ver tutorial de instalación', callback_data: 'install' }],
               [{ text: '💳 Comprar código', callback_data: 'comprar' }],
               [{ text: '📥 Descargar app', callback_data: 'descargar' }],
             ],
@@ -316,6 +384,11 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
     await procesarDescarga(bot, chatId, userId, username);
     return;
   }
+
+  if (comando === 'install') {
+    await procesarInstall(bot, chatId, userId, username);
+    return;
+  }
 }
 
 export async function procesarMensaje(bot, chatId, userId, username, texto) {
@@ -323,6 +396,10 @@ export async function procesarMensaje(bot, chatId, userId, username, texto) {
 
   if (['ayuda', 'help'].some((p) => textoNorm.includes(p))) {
     await enviar(bot, chatId, msgAyuda());
+    return;
+  }
+  if (['install', 'instalar', 'instalación', 'instalacion'].some((p) => textoNorm.includes(p))) {
+    await procesarInstall(bot, chatId, userId, username);
     return;
   }
   if (['codigo', 'código', 'code', 'comprar', 'quiero'].some((p) => textoNorm.includes(p))) {
@@ -344,6 +421,7 @@ export async function procesarMensaje(bot, chatId, userId, username, texto) {
     await enviar(bot, chatId, msgBienvenida(), {
       reply_markup: {
         inline_keyboard: [
+          [{ text: '🎬 Ver tutorial de instalación', callback_data: 'install' }],
           [{ text: `💳 Comprar código - ${PRECIO}`, callback_data: 'comprar' }],
           [{ text: '📥 Descargar app', callback_data: 'descargar' }],
         ],
