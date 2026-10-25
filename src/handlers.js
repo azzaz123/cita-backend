@@ -311,11 +311,10 @@ export async function procesarInstall(bot, chatId, userId, username) {
 
     // 3. Enviar el vídeo (mientras se sube, Telegram muestra "enviando vídeo...")
     await bot.sendVideo(chatId, videoPath, {
-      caption: `📱 *Instalación de Cita Previa* (${sizeMB} MB)\n\nSigue los pasos del vídeo.`,
-      parse_mode: 'Markdown',
-      supports_streaming: true,
-      contentType: 'video/mp4',
-    });
+  caption: `📱 *Instalación de Cita Previa* (${sizeMB} MB)\n\nSigue los pasos del vídeo.`,
+  parse_mode: 'Markdown',
+  supports_streaming: true,
+});
 
     // 4. Editar el mensaje de loading a "enviado"
     if (loadingMsg) {
