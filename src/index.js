@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 dotenv.config();
+process.env.NTBA_FIX_350 = true;   // ✅ Silencia el warning de content-type
 
 import express from 'express';
 import { iniciarTelegram, getBot } from './telegram.js';
