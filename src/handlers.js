@@ -256,15 +256,16 @@ export async function procesarDescarga(bot, chatId, userId, username) {
 // ─── COMANDO /install (vídeo de instalación) ───
 
 export async function procesarInstall(bot, chatId, userId, username) {
+  let loadingMsg = null;
   try {
-    // Rate-limit: 3 peticiones por minuto
+    // Rate-limit
     const rl = await rateLimit(`tg:rl:install:${userId}`, 3, 60);
     if (!rl.allowed) {
       await enviar(bot, chatId, '⏳ Demasiadas peticiones. Espera un momento.');
       return;
     }
 
-    // Comprobar que el vídeo existe
+    // Comprobar vídeo
     const videoPath = path.isAbsolute(INSTALL_VIDEO_PATH)
       ? INSTALL_VIDEO_PATH
       : path.join(process.cwd(), INSTALL_VIDEO_PATH);
@@ -278,7 +279,6 @@ export async function procesarInstall(bot, chatId, userId, username) {
     const stats = fs.statSync(videoPath);
     const sizeMB = (stats.size / (1024 * 1024)).toFixed(1);
 
-    // Límite de Telegram: 50 MB por archivo en bots
     if (stats.size > 50 * 1024 * 1024) {
       logger.error({ sizeMB }, 'Vídeo supera el límite de Telegram');
       await enviar(bot, chatId,
@@ -288,31 +288,73 @@ export async function procesarInstall(bot, chatId, userId, username) {
       return;
     }
 
-    // Mensaje previo
-    await enviar(bot, chatId,
-      `🎬 *TUTORIAL DE INSTALACIÓN*\n\n` +
-      `Te envío un vídeo con los pasos para instalar la app.\n\n` +
-      `▸ Descarga el archivo .apk desde /descargar\n` +
-      `▸ Ábrelo en tu Android\n` +
-      `▸ Permite "instalar apps de origen desconocido"\n` +
-      `▸ Sigue los pasos del vídeo\n\n` +
-      `${SOPORTE}\n\n${FIRMA}`
-    );
+    // 1. Enviar mensaje de loading
+    try {
+      const sent = await bot.sendMessage(chatId,
+        `⏳ *PREPARANDO EL VÍDEO...*\n\n` +
+        `▸ Peso: ${sizeMB} MB\n` +
+        `▸ Duración estimada de envío: ${Math.max(5, Math.ceil(sizeMB / 3))} segundos\n\n` +
+        `_No cierres el chat, el vídeo se enviará automáticamente._`,
+        { parse_mode: 'Markdown' }
+      );
+      loadingMsg = sent.message_id;
+    } catch (err) {
+      logger.error({ err }, 'Error enviando mensaje de loading');
+    }
 
-    // Enviar el vídeo como documento de vídeo (el usuario NO ve URL)
+    // 2. Activar "enviando vídeo..." en la cabecera del chat
+    try {
+      await bot.sendChatAction(chatId, 'upload_video');
+    } catch (err) {
+      logger.error({ err }, 'Error enviando chat action');
+    }
+
+    // 3. Enviar el vídeo (mientras se sube, Telegram muestra "enviando vídeo...")
     await bot.sendVideo(chatId, videoPath, {
       caption: `📱 *Instalación de Cita Previa* (${sizeMB} MB)\n\nSigue los pasos del vídeo.`,
       parse_mode: 'Markdown',
       supports_streaming: true,
+      contentType: 'video/mp4',
     });
+
+    // 4. Editar el mensaje de loading a "enviado"
+    if (loadingMsg) {
+      try {
+        await bot.editMessageText(
+          `✅ *VÍDEO ENVIADO*\n\n` +
+          `Si no lo ves arriba, baja en el chat.\n\n` +
+          `▸ Descarga el archivo .apk desde /descargar\n` +
+          `▸ Ábrelo en tu Android\n` +
+          `▸ Permite "instalar apps de origen desconocido"\n` +
+          `▸ Sigue los pasos del vídeo\n\n` +
+          `${SOPORTE}\n\n${FIRMA}`,
+          {
+            chat_id: chatId,
+            message_id: loadingMsg,
+            parse_mode: 'Markdown',
+          }
+        );
+      } catch (err) {
+        // Si falla la edición, no es crítico
+        logger.error({ err }, 'Error editando mensaje de loading');
+      }
+    }
 
     logger.info({ userId, username, sizeMB }, '🎬 Vídeo de instalación enviado');
   } catch (err) {
     logger.error({ err, userId }, 'Error enviando vídeo de instalación');
-    await enviar(bot, chatId, msgError());
+    if (loadingMsg) {
+      try {
+        await bot.editMessageText(
+          `❌ *ERROR AL ENVIAR EL VÍDEO*\n\nInténtalo de nuevo en unos minutos.\n\n${SOPORTE}`,
+          { chat_id: chatId, message_id: loadingMsg, parse_mode: 'Markdown' }
+        );
+      } catch (e) {}
+    } else {
+      await enviar(bot, chatId, msgError());
+    }
   }
 }
-
 // ─── COMANDOS ───
 
 export async function procesarComando(bot, chatId, userId, username, comando, param) {
