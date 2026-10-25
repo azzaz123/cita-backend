@@ -300,11 +300,12 @@ export async function procesarInstall(bot, chatId, userId, username) {
     );
 
     // Enviar el vídeo como documento de vídeo (el usuario NO ve URL)
-    await bot.sendVideo(chatId, videoPath, {
-      caption: `📱 *Instalación de Cita Previa* (${sizeMB} MB)\n\nSigue los pasos del vídeo.`,
-      parse_mode: 'Markdown',
-      supports_streaming: true,
-    });
+   await bot.sendVideo(chatId, videoPath, {
+  caption: `📱 *Instalación de Cita Previa* (${sizeMB} MB)\n\nSigue los pasos del vídeo.`,
+  parse_mode: 'Markdown',
+  supports_streaming: true,
+  contentType: 'video/mp4',  // ← añade esto
+});
 
     logger.info({ userId, username, sizeMB }, '🎬 Vídeo de instalación enviado');
   } catch (err) {
