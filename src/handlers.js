@@ -22,6 +22,10 @@ const DOWNLOAD_ONLY_BUYERS = process.env.DOWNLOAD_ONLY_BUYERS === 'true';
 // ─── INSTALL VIDEO ───
 const INSTALL_VIDEO_PATH = process.env.INSTALL_VIDEO_PATH || 'videos/install.mp4';
 
+// ─── STARS ───
+const STARS_PRECIO = parseInt(process.env.STARS_PRECIO || '2500'); // 2500 Stars por defecto
+const STARS_PRODUCTO = 'Código Premium - 3 meses';
+
 // ─── PLANTILLAS ───
 
 function msgBienvenida() {
@@ -89,6 +93,7 @@ function msgAyuda() {
     `ℹ️ AYUDA\n\n` +
     `Comandos:\n\n` +
     `▸ /install — ver tutorial de instalación\n` +
+    `▸ /stars — pagar con Telegram Stars\n` +
     `▸ /codigo — comprar o ver tu código\n` +
     `▸ /miscompras — historial de compras\n` +
     `▸ /descargar — descargar la app\n` +
@@ -183,14 +188,12 @@ function generarTokenDescarga(userId) {
 
 export async function procesarDescarga(bot, chatId, userId, username) {
   try {
-    // 1. Rate-limit: 3 peticiones por minuto
     const rl = await rateLimit(`tg:rl:descargar:${userId}`, 3, 60);
     if (!rl.allowed) {
       await enviar(bot, chatId, '⏳ Demasiadas peticiones. Espera un momento.');
       return;
     }
 
-    // 2. Solo permitir a compradores (si DOWNLOAD_ONLY_BUYERS=true)
     if (DOWNLOAD_ONLY_BUYERS) {
       const compras = await obtenerMisCompras(userId);
       if (!compras || compras.length === 0) {
@@ -204,16 +207,13 @@ export async function procesarDescarga(bot, chatId, userId, username) {
       }
     }
 
-    // 3. Verificar DOWNLOAD_SECRET
     if (!DOWNLOAD_SECRET) {
       await enviar(bot, chatId, '⚠️ La descarga no está configurada. Contacta con soporte.');
       return;
     }
 
-    // 4. Generar token firmado
     const { token, exp } = generarTokenDescarga(userId);
 
-    // 5. Registrar el token en el backend (un solo uso)
     try {
       await fetch(`${BACKEND_URL}/api/download/register`, {
         method: 'POST',
@@ -227,7 +227,6 @@ export async function procesarDescarga(bot, chatId, userId, username) {
       logger.error({ err }, 'Error registrando token de descarga');
     }
 
-    // 6. Enviar el enlace con el token
     const url = `${BACKEND_URL}/api/download/${encodeURIComponent(token)}`;
     const minutos = Math.round(DOWNLOAD_TOKEN_TTL / 60000);
 
@@ -258,14 +257,12 @@ export async function procesarDescarga(bot, chatId, userId, username) {
 export async function procesarInstall(bot, chatId, userId, username) {
   let loadingMsg = null;
   try {
-    // Rate-limit
     const rl = await rateLimit(`tg:rl:install:${userId}`, 3, 60);
     if (!rl.allowed) {
       await enviar(bot, chatId, '⏳ Demasiadas peticiones. Espera un momento.');
       return;
     }
 
-    // Comprobar vídeo
     const videoPath = path.isAbsolute(INSTALL_VIDEO_PATH)
       ? INSTALL_VIDEO_PATH
       : path.join(process.cwd(), INSTALL_VIDEO_PATH);
@@ -288,7 +285,6 @@ export async function procesarInstall(bot, chatId, userId, username) {
       return;
     }
 
-    // 1. Enviar mensaje de loading
     try {
       const sent = await bot.sendMessage(chatId,
         `⏳ *PREPARANDO EL VÍDEO...*\n\n` +
@@ -302,21 +298,19 @@ export async function procesarInstall(bot, chatId, userId, username) {
       logger.error({ err }, 'Error enviando mensaje de loading');
     }
 
-    // 2. Activar "enviando vídeo..." en la cabecera del chat
     try {
       await bot.sendChatAction(chatId, 'upload_video');
     } catch (err) {
       logger.error({ err }, 'Error enviando chat action');
     }
 
-    // 3. Enviar el vídeo (mientras se sube, Telegram muestra "enviando vídeo...")
     await bot.sendVideo(chatId, videoPath, {
-  caption: `📱 *Instalación de Cita Previa* (${sizeMB} MB)\n\nSigue los pasos del vídeo.`,
-  parse_mode: 'Markdown',
-  supports_streaming: true,
-});
+      caption: `📱 *Instalación de Cita Previa* (${sizeMB} MB)\n\nSigue los pasos del vídeo.`,
+      parse_mode: 'Markdown',
+      supports_streaming: true,
+      contentType: 'video/mp4',
+    });
 
-    // 4. Editar el mensaje de loading a "enviado"
     if (loadingMsg) {
       try {
         await bot.editMessageText(
@@ -334,7 +328,6 @@ export async function procesarInstall(bot, chatId, userId, username) {
           }
         );
       } catch (err) {
-        // Si falla la edición, no es crítico
         logger.error({ err }, 'Error editando mensaje de loading');
       }
     }
@@ -354,6 +347,64 @@ export async function procesarInstall(bot, chatId, userId, username) {
     }
   }
 }
+
+// ─── COMANDO /stars (factura Telegram Stars) ───
+
+export async function enviarFacturaStars(bot, chatId, userId, username) {
+  try {
+    const rl = await rateLimit(`tg:rl:stars:${userId}`, 3, 60);
+    if (!rl.allowed) {
+      await enviar(bot, chatId, '⏳ Demasiadas peticiones. Espera un momento.');
+      return;
+    }
+
+    const payload = `stars_${userId}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+
+    const insertRes = await fetch(`${process.env.API_URL}/api/bot/stars/pending`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.API_KEY,
+      },
+      body: JSON.stringify({
+        payload,
+        user_id: String(userId),
+        username: username || '',
+        amount_stars: STARS_PRECIO,
+      }),
+    });
+
+    if (!insertRes.ok) {
+      const errText = await insertRes.text();
+      logger.error({ errText, payload }, 'Error guardando compra Stars pending');
+      await enviar(bot, chatId, msgError());
+      return;
+    }
+
+    await bot.sendInvoice(
+      chatId,
+      STARS_PRODUCTO,
+      `Código de activación válido por 90 días para 2 NIEs.\n\nRecibirás el código automáticamente tras el pago.`,
+      payload,
+      '',
+      'XTR',
+      [{ label: STARS_PRODUCTO, amount: STARS_PRECIO }],
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: `⭐ Pagar ${STARS_PRECIO} Stars`, pay: true }],
+          ],
+        },
+      }
+    );
+
+    logger.info({ userId, username, payload, stars: STARS_PRECIO }, '⭐ Factura Stars enviada');
+  } catch (err) {
+    logger.error({ err, userId }, 'Error enviando factura Stars');
+    await enviar(bot, chatId, msgError());
+  }
+}
+
 // ─── COMANDOS ───
 
 export async function procesarComando(bot, chatId, userId, username, comando, param) {
@@ -416,6 +467,11 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
     return;
   }
 
+  if (comando === 'stars') {
+    await enviarFacturaStars(bot, chatId, userId, username);
+    return;
+  }
+
   if (comando === 'comprar') {
     await iniciarCompra(bot, chatId, userId, username);
     return;
@@ -441,6 +497,10 @@ export async function procesarMensaje(bot, chatId, userId, username, texto) {
   }
   if (['install', 'instalar', 'instalación', 'instalacion'].some((p) => textoNorm.includes(p))) {
     await procesarInstall(bot, chatId, userId, username);
+    return;
+  }
+  if (['stars', 'estrella', 'estrellas'].some((p) => textoNorm.includes(p))) {
+    await enviarFacturaStars(bot, chatId, userId, username);
     return;
   }
   if (['codigo', 'código', 'code', 'comprar', 'quiero'].some((p) => textoNorm.includes(p))) {
