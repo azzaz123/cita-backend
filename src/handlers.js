@@ -55,7 +55,7 @@ function msgComprar() {
   );
 }
 
-function msgCodigoComprado(codigo) {
+export function msgCodigoComprado(codigo) {
   return (
     `✅ PAGO CONFIRMADO\n\n` +
     `¡Gracias por tu compra!\n\n` +
