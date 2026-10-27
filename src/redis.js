@@ -10,13 +10,27 @@ export const redis = new Redis(process.env.REDIS_URL, {
 redis.on('connect', () => console.log('✅ Redis conectado'));
 redis.on('error', (err) => console.error('❌ Redis error:', err.message));
 
+// Lua: INCR atómico + EXPIRE solo en el primer hit
+const RATE_LIMIT_LUA = `
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return current
+`;
+
 /**
- * Rate limit por ventana deslizante simple.
+ * Rate limit por ventana fija, atómico (INCR + EXPIRE en Lua).
  */
 export async function rateLimit(key, max, windowSec) {
-  const current = await redis.incr(key);
-  if (current === 1) await redis.expire(key, windowSec);
-  return { allowed: current <= max, remaining: Math.max(0, max - current) };
+  try {
+    const current = await redis.eval(RATE_LIMIT_LUA, 1, key, String(windowSec));
+    return { allowed: current <= max, remaining: Math.max(0, max - current) };
+  } catch (err) {
+    console.error('❌ rateLimit error:', err.message);
+    // Fail-open controlado: si Redis falla, no bloqueamos al usuario
+    return { allowed: true, remaining: max };
+  }
 }
 
 /**

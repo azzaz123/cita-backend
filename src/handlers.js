@@ -13,18 +13,22 @@ const FIRMA = '─────────────────────�
 const SOPORTE = '🕐 Soporte: L-V de 9:00 a 18:00';
 const PRECIO = '25€';
 
+// ─── STARS ───
+const PRECIO_STARS = parseInt(process.env.PRECIO_STARS || '150', 10); // nº de Telegram Stars
+const STARS_CURRENCY = 'XTR';
+
 // ─── DESCARGA ───
 const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET;
 const BACKEND_URL = process.env.BACKEND_URL || 'https://automate-9ij2.onrender.com';
-const DOWNLOAD_TOKEN_TTL = parseInt(process.env.DOWNLOAD_TOKEN_TTL || '900000'); // 15 min
-const DOWNLOAD_ONLY_BUYERS = process.env.DOWNLOAD_ONLY_BUYERS === 'true';
+const DOWNLOAD_TOKEN_TTL = parseInt(process.env.DOWNLOAD_TOKEN_TTL || '900000');
 
 // ─── INSTALL VIDEO ───
 const INSTALL_VIDEO_PATH = process.env.INSTALL_VIDEO_PATH || 'videos/install.mp4';
 
-// ─── STARS ───
-const STARS_PRECIO = parseInt(process.env.STARS_PRECIO || '2500'); // 2500 Stars por defecto
-const STARS_PRODUCTO = 'Código Premium - 3 meses';
+// ─── HELPERS DE ESCAPE (defensa en profundidad) ───
+function escMarkdown(s) {
+  return String(s).replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+}
 
 // ─── PLANTILLAS ───
 
@@ -36,14 +40,14 @@ function msgBienvenida() {
     `💎 CÓDIGO PREMIUM\n` +
     `▸ Duración: 3 meses\n` +
     `▸ Válido para 2 NIEs\n` +
-    `▸ Precio: ${PRECIO} (pago seguro con tarjeta)\n\n` +
+    `▸ Precio: ${PRECIO} (pago seguro con Telegram Stars ⭐)\n\n` +
     `▸ Usa /codigo para comprar tu código.\n\n` +
     `${SOPORTE}\n\n` +
     `${FIRMA}`
   );
 }
 
-function msgComprar() {
+function msgComprarStars() {
   return (
     `💎 CÓDIGO PREMIUM\n\n` +
     `Características:\n` +
@@ -51,17 +55,17 @@ function msgComprar() {
     `▸ Válido para 2 NIEs\n` +
     `▸ Activación inmediata\n\n` +
     `Precio: ${PRECIO}\n\n` +
-    `Pulsa el botón para pagar de forma segura.`
+    `Pulsa el botón para pagar con Telegram Stars ⭐.`
   );
 }
 
-export function msgCodigoComprado(codigo) {
+function msgCodigoComprado(codigo) {
   return (
     `✅ PAGO CONFIRMADO\n\n` +
     `¡Gracias por tu compra!\n\n` +
     `Tu código PREMIUM es:\n\n` +
     `━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `    ${codigo}\n` +
+    `    ${escMarkdown(codigo)}\n` +
     `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
     `▸ Válido por 3 meses desde su activación\n` +
     `▸ Válido para este dispositivo\n` +
@@ -76,7 +80,7 @@ function msgCodigoExistente(codigo) {
     `📋 YA TIENES UN CÓDIGO\n\n` +
     `Tu código premium es:\n\n` +
     `━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `    ${codigo}\n` +
+    `    ${escMarkdown(codigo)}\n` +
     `━━━━━━━━━━━━━━━━━━━━━━\n\n` +
     `▸ Aún no lo has activado en la app.\n` +
     `▸ Ábrelo en la app para activar.\n\n` +
@@ -93,10 +97,10 @@ function msgAyuda() {
     `ℹ️ AYUDA\n\n` +
     `Comandos:\n\n` +
     `▸ /install — ver tutorial de instalación\n` +
-    `▸ /stars — pagar con Telegram Stars\n` +
     `▸ /codigo — comprar o ver tu código\n` +
     `▸ /miscompras — historial de compras\n` +
     `▸ /descargar — descargar la app\n` +
+    `▸ /stars — pagar con Telegram Stars ⭐\n` +
     `▸ /ayuda — este mensaje\n\n` +
     `${SOPORTE}\n\n` +
     `${FIRMA}`
@@ -118,10 +122,13 @@ function msgMisCompras(compras) {
     return `📭 SIN COMPRAS\n\nAún no has comprado ningún código.\n\nUsa /codigo para comprar tu primero.\n\n${SOPORTE}\n\n${FIRMA}`;
   }
 
-  const lista = compras.map((c, i) => {
-    const fecha = c.creado_en ? new Date(c.creado_en).toLocaleDateString('es-ES') : '—';
-    return `${i + 1}. ${c.codigo}\n   ${fecha} · ${c.entregado ? '✅ activo' : '⏳ pendiente'}`;
-  }).join('\n\n');
+  const lista = compras
+    .map((c, i) => {
+      const fecha = c.creado_en ? new Date(c.creado_en).toLocaleDateString('es-ES') : '—';
+      const estado = c.entregado ? '✅ activo' : '⏳ pendiente';
+      return `${i + 1}. ${escMarkdown(c.codigo)}\n   ${fecha} · ${estado}`;
+    })
+    .join('\n\n');
 
   return `📋 MIS COMPRAS\n\n${lista}\n\nTotal: ${compras.length} código(s)\n\n${SOPORTE}\n\n${FIRMA}`;
 }
@@ -142,27 +149,43 @@ async function esPrimeraVez(userId) {
   return res === 'OK';
 }
 
+/**
+ * Devuelve:
+ *  - Array de compras (puede ser []) si OK
+ *  - null si hubo error de red/servidor (distinguible de "sin compras")
+ */
 async function obtenerMisCompras(userId) {
   try {
-    const res = await fetch(`${process.env.API_URL}/api/bot/mis-compras/${userId}`, {
+    const res = await fetch(`${process.env.API_URL}/api/bot/mis-compras/${encodeURIComponent(userId)}`, {
       headers: { 'x-api-key': process.env.API_KEY },
+      signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      logger.warn({ status: res.status, userId }, 'mis-compras: respuesta no OK');
+      return null;
+    }
     const data = await res.json();
-    return data.compras || [];
+    return Array.isArray(data.compras) ? data.compras : [];
   } catch (err) {
-    return [];
+    logger.error({ err, userId }, 'mis-compras: error de red');
+    return null;
   }
 }
 
 async function marcarEntregado(userId, codigo) {
   try {
-    await fetch(`${process.env.API_URL}/api/bot/entregar/${userId}`, {
+    const res = await fetch(`${process.env.API_URL}/api/bot/entregar/${encodeURIComponent(userId)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.API_KEY },
       body: JSON.stringify({ codigo }),
+      signal: AbortSignal.timeout(8000),
     });
-  } catch (err) {}
+    if (!res.ok) {
+      logger.warn({ status: res.status, userId }, 'marcarEntregado: respuesta no OK');
+    }
+  } catch (err) {
+    logger.error({ err, userId }, 'marcarEntregado: error de red');
+  }
 }
 
 // ─── GENERACIÓN DE TOKEN DE DESCARGA ───
@@ -194,14 +217,20 @@ export async function procesarDescarga(bot, chatId, userId, username) {
       return;
     }
 
-    if (DOWNLOAD_ONLY_BUYERS) {
+    if (process.env.DOWNLOAD_ONLY_BUYERS === 'true') {
       const compras = await obtenerMisCompras(userId);
-      if (!compras || compras.length === 0) {
-        await enviar(bot, chatId,
+      if (compras === null) {
+        await enviar(bot, chatId, msgError());
+        return;
+      }
+      if (compras.length === 0) {
+        await enviar(
+          bot,
+          chatId,
           '⚠️ *ACCESO RESTRINGIDO*\n\n' +
-          'Necesitas comprar un código primero para descargar la app.\n\n' +
-          'Usa /codigo para comprar tu código.\n\n' +
-          `${SOPORTE}\n\n${FIRMA}`
+            'Necesitas comprar un código primero para descargar la app.\n\n' +
+            'Usa /codigo para comprar tu código.\n\n' +
+            `${SOPORTE}\n\n${FIRMA}`
         );
         return;
       }
@@ -222,6 +251,7 @@ export async function procesarDescarga(bot, chatId, userId, username) {
           'x-api-key': process.env.API_KEY,
         },
         body: JSON.stringify({ token, exp, uid: String(userId) }),
+        signal: AbortSignal.timeout(8000),
       });
     } catch (err) {
       logger.error({ err }, 'Error registrando token de descarga');
@@ -252,7 +282,7 @@ export async function procesarDescarga(bot, chatId, userId, username) {
   }
 }
 
-// ─── COMANDO /install (vídeo de instalación) ───
+// ─── COMANDO /install ───
 
 export async function procesarInstall(bot, chatId, userId, username) {
   let loadingMsg = null;
@@ -278,19 +308,22 @@ export async function procesarInstall(bot, chatId, userId, username) {
 
     if (stats.size > 50 * 1024 * 1024) {
       logger.error({ sizeMB }, 'Vídeo supera el límite de Telegram');
-      await enviar(bot, chatId,
+      await enviar(
+        bot,
+        chatId,
         `⚠️ El vídeo pesa ${sizeMB} MB y supera el límite de Telegram (50 MB).\n\n` +
-        `Contacta con soporte para recibirlo por otro medio.\n\n${SOPORTE}`
+          `Contacta con soporte para recibirlo por otro medio.\n\n${SOPORTE}`
       );
       return;
     }
 
     try {
-      const sent = await bot.sendMessage(chatId,
+      const sent = await bot.sendMessage(
+        chatId,
         `⏳ *PREPARANDO EL VÍDEO...*\n\n` +
-        `▸ Peso: ${sizeMB} MB\n` +
-        `▸ Duración estimada de envío: ${Math.max(5, Math.ceil(sizeMB / 3))} segundos\n\n` +
-        `_No cierres el chat, el vídeo se enviará automáticamente._`,
+          `▸ Peso: ${sizeMB} MB\n` +
+          `▸ Duración estimada de envío: ${Math.max(5, Math.ceil(sizeMB / 3))} segundos\n\n` +
+          `_No cierres el chat, el vídeo se enviará automáticamente._`,
         { parse_mode: 'Markdown' }
       );
       loadingMsg = sent.message_id;
@@ -308,24 +341,19 @@ export async function procesarInstall(bot, chatId, userId, username) {
       caption: `📱 *Instalación de Cita Previa* (${sizeMB} MB)\n\nSigue los pasos del vídeo.`,
       parse_mode: 'Markdown',
       supports_streaming: true,
-      contentType: 'video/mp4',
     });
 
     if (loadingMsg) {
       try {
         await bot.editMessageText(
           `✅ *VÍDEO ENVIADO*\n\n` +
-          `Si no lo ves arriba, baja en el chat.\n\n` +
-          `▸ Descarga el archivo .apk desde /descargar\n` +
-          `▸ Ábrelo en tu Android\n` +
-          `▸ Permite "instalar apps de origen desconocido"\n` +
-          `▸ Sigue los pasos del vídeo\n\n` +
-          `${SOPORTE}\n\n${FIRMA}`,
-          {
-            chat_id: chatId,
-            message_id: loadingMsg,
-            parse_mode: 'Markdown',
-          }
+            `Si no lo ves arriba, baja en el chat.\n\n` +
+            `▸ Descarga el archivo .apk desde /descargar\n` +
+            `▸ Ábrelo en tu Android\n` +
+            `▸ Permite "instalar apps de origen desconocido"\n` +
+            `▸ Sigue los pasos del vídeo\n\n` +
+            `${SOPORTE}\n\n${FIRMA}`,
+          { chat_id: chatId, message_id: loadingMsg, parse_mode: 'Markdown' }
         );
       } catch (err) {
         logger.error({ err }, 'Error editando mensaje de loading');
@@ -337,10 +365,11 @@ export async function procesarInstall(bot, chatId, userId, username) {
     logger.error({ err, userId }, 'Error enviando vídeo de instalación');
     if (loadingMsg) {
       try {
-        await bot.editMessageText(
-          `❌ *ERROR AL ENVIAR EL VÍDEO*\n\nInténtalo de nuevo en unos minutos.\n\n${SOPORTE}`,
-          { chat_id: chatId, message_id: loadingMsg, parse_mode: 'Markdown' }
-        );
+        await bot.editMessageText(`❌ *ERROR AL ENVIAR EL VÍDEO*\n\nInténtalo de nuevo en unos minutos.\n\n${SOPORTE}`, {
+          chat_id: chatId,
+          message_id: loadingMsg,
+          parse_mode: 'Markdown',
+        });
       } catch (e) {}
     } else {
       await enviar(bot, chatId, msgError());
@@ -348,70 +377,11 @@ export async function procesarInstall(bot, chatId, userId, username) {
   }
 }
 
-// ─── COMANDO /stars (factura Telegram Stars) ───
-
-export async function enviarFacturaStars(bot, chatId, userId, username) {
-  try {
-    const rl = await rateLimit(`tg:rl:stars:${userId}`, 3, 60);
-    if (!rl.allowed) {
-      await enviar(bot, chatId, '⏳ Demasiadas peticiones. Espera un momento.');
-      return;
-    }
-
-    const payload = `stars_${userId}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
-
-    const insertRes = await fetch(`${process.env.API_URL}/api/bot/stars/pending`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.API_KEY,
-      },
-      body: JSON.stringify({
-        payload,
-        user_id: String(userId),
-        username: username || '',
-        amount_stars: STARS_PRECIO,
-      }),
-    });
-
-    if (!insertRes.ok) {
-      const errText = await insertRes.text();
-      logger.error({ errText, payload }, 'Error guardando compra Stars pending');
-      await enviar(bot, chatId, msgError());
-      return;
-    }
-
-    await bot.sendInvoice(
-      chatId,
-      STARS_PRODUCTO,
-      `Código de activación válido por 90 días para 2 NIEs.\n\nRecibirás el código automáticamente tras el pago.`,
-      payload,
-      '',
-      'XTR',
-      [{ label: STARS_PRODUCTO, amount: STARS_PRECIO }],
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: `⭐ Pagar ${STARS_PRECIO} Stars`, pay: true }],
-          ],
-        },
-      }
-    );
-
-    logger.info({ userId, username, payload, stars: STARS_PRECIO }, '⭐ Factura Stars enviada');
-  } catch (err) {
-    logger.error({ err, userId }, 'Error enviando factura Stars');
-    await enviar(bot, chatId, msgError());
-  }
-}
-
 // ─── COMANDOS ───
 
 export async function procesarComando(bot, chatId, userId, username, comando, param) {
   if (comando === 'start') {
-    if (param === 'pago_ok') {
-      return;
-    }
+    if (param === 'pago_ok') return;
     if (param === 'pago_cancel') {
       await enviar(bot, chatId, '❌ Pago cancelado.\n\nUsa /codigo si quieres intentarlo de nuevo.');
       return;
@@ -423,14 +393,18 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
         reply_markup: {
           inline_keyboard: [
             [{ text: '🎬 Ver tutorial de instalación', callback_data: 'install' }],
-            [{ text: `💳 Comprar código - ${PRECIO}`, callback_data: 'comprar' }],
+            [{ text: `⭐ Comprar código - ${PRECIO}`, callback_data: 'stars' }],
             [{ text: '📥 Descargar app', callback_data: 'descargar' }],
           ],
         },
       });
     } else {
       const compras = await obtenerMisCompras(userId);
-      const pendientes = compras.filter(c => !c.entregado);
+      if (compras === null) {
+        await enviar(bot, chatId, msgError());
+        return;
+      }
+      const pendientes = compras.filter((c) => !c.entregado);
       if (pendientes.length > 0) {
         for (const compra of pendientes) {
           await enviar(bot, chatId, msgCodigoComprado(compra.codigo));
@@ -441,7 +415,7 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
           reply_markup: {
             inline_keyboard: [
               [{ text: '🎬 Ver tutorial de instalación', callback_data: 'install' }],
-              [{ text: '💳 Comprar código', callback_data: 'comprar' }],
+              [{ text: '⭐ Comprar código', callback_data: 'stars' }],
               [{ text: '📥 Descargar app', callback_data: 'descargar' }],
             ],
           },
@@ -463,17 +437,11 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
 
   if (comando === 'miscompras') {
     const compras = await obtenerMisCompras(userId);
+    if (compras === null) {
+      await enviar(bot, chatId, msgError());
+      return;
+    }
     await enviar(bot, chatId, msgMisCompras(compras));
-    return;
-  }
-
-  if (comando === 'stars') {
-    await enviarFacturaStars(bot, chatId, userId, username);
-    return;
-  }
-
-  if (comando === 'comprar') {
-    await iniciarCompra(bot, chatId, userId, username);
     return;
   }
 
@@ -484,6 +452,11 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
 
   if (comando === 'install') {
     await procesarInstall(bot, chatId, userId, username);
+    return;
+  }
+
+  if (comando === 'stars') {
+    await enviarFacturaStars(bot, chatId, userId, username);
     return;
   }
 }
@@ -499,16 +472,16 @@ export async function procesarMensaje(bot, chatId, userId, username, texto) {
     await procesarInstall(bot, chatId, userId, username);
     return;
   }
-  if (['stars', 'estrella', 'estrellas'].some((p) => textoNorm.includes(p))) {
-    await enviarFacturaStars(bot, chatId, userId, username);
-    return;
-  }
-  if (['codigo', 'código', 'code', 'comprar', 'quiero'].some((p) => textoNorm.includes(p))) {
+  if (['codigo', 'código', 'code', 'comprar', 'quiero', 'stars'].some((p) => textoNorm.includes(p))) {
     await pedirCodigo(bot, chatId, userId, username);
     return;
   }
   if (['compras', 'historial'].some((p) => textoNorm.includes(p))) {
     const compras = await obtenerMisCompras(userId);
+    if (compras === null) {
+      await enviar(bot, chatId, msgError());
+      return;
+    }
     await enviar(bot, chatId, msgMisCompras(compras));
     return;
   }
@@ -523,7 +496,7 @@ export async function procesarMensaje(bot, chatId, userId, username, texto) {
       reply_markup: {
         inline_keyboard: [
           [{ text: '🎬 Ver tutorial de instalación', callback_data: 'install' }],
-          [{ text: `💳 Comprar código - ${PRECIO}`, callback_data: 'comprar' }],
+          [{ text: `⭐ Comprar código - ${PRECIO}`, callback_data: 'stars' }],
           [{ text: '📥 Descargar app', callback_data: 'descargar' }],
         ],
       },
@@ -544,8 +517,12 @@ async function pedirCodigo(bot, chatId, userId, username) {
   }
 
   const compras = await obtenerMisCompras(userId);
-  const pendientes = compras.filter(c => !c.entregado);
+  if (compras === null) {
+    await enviar(bot, chatId, msgError());
+    return;
+  }
 
+  const pendientes = compras.filter((c) => !c.entregado);
   if (pendientes.length > 0) {
     for (const compra of pendientes) {
       await enviar(bot, chatId, msgCodigoComprado(compra.codigo));
@@ -554,46 +531,87 @@ async function pedirCodigo(bot, chatId, userId, username) {
     return;
   }
 
-  const activos = compras.filter(c => c.entregado);
+  const activos = compras.filter((c) => c.entregado);
   if (activos.length > 0) {
     await enviar(bot, chatId, msgCodigoExistente(activos[0].codigo), {
-      reply_markup: { inline_keyboard: [[{ text: '💳 Comprar otro código', callback_data: 'comprar' }]] },
+      reply_markup: { inline_keyboard: [[{ text: '⭐ Comprar otro código', callback_data: 'stars' }]] },
     });
     return;
   }
 
-  await enviar(bot, chatId, msgComprar(), {
-    reply_markup: { inline_keyboard: [[{ text: `💳 Comprar ahora - ${PRECIO}`, callback_data: 'comprar' }]] },
+  await enviar(bot, chatId, msgComprarStars(), {
+    reply_markup: {
+      inline_keyboard: [[{ text: `⭐ Pagar ${PRECIO} con Telegram Stars`, callback_data: 'stars' }]],
+    },
   });
 }
 
-async function iniciarCompra(bot, chatId, userId, username) {
+// ─── STARS: enviar factura ───
+// REGLA: registrar el pending en backend ANTES de sendInvoice.
+// Si falla el registro, NO se envía la factura (evita usuarios pagando sin código).
+
+export async function enviarFacturaStars(bot, chatId, userId, username) {
   try {
-    const res = await fetch(`${process.env.API_URL}/api/bot/comprar-codigo`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.API_KEY },
-      body: JSON.stringify({ user_id: String(userId), username: username || '' }),
-    });
-
-    if (!res.ok) {
-      logger.error({ status: res.status }, 'Error creando compra');
-      await enviar(bot, chatId, msgError());
+    const rl = await rateLimit(`tg:rl:stars:${userId}`, 5, 60);
+    if (!rl.allowed) {
+      await enviar(bot, chatId, '⏳ Demasiadas peticiones. Espera un momento.');
+      return;
+    }
+    const puede = await cooldown(`tg:cd:stars:${userId}`, COOLDOWN_MS);
+    if (!puede) {
+      await enviar(bot, chatId, '⏳ Espera unos segundos.');
       return;
     }
 
-    const data = await res.json();
-    if (!data.success || !data.checkout_url) {
-      await enviar(bot, chatId, msgError());
-      return;
-    }
+    // 1) Payload impredecible (UUID v4)
+    const payload = crypto.randomUUID();
 
-    await enviar(bot, chatId,
-      `💳 PAGO SEGURO\n\nPulsa el botón para pagar ${PRECIO} de forma segura con Stripe.\n\nUna vez completado el pago, recibirás tu código automáticamente aquí.\n\n⚠️ No cierres Telegram hasta terminar el pago.`,
-      {
-        reply_markup: { inline_keyboard: [[{ text: `💳 Pagar ${PRECIO}`, url: data.checkout_url }]] },
+    // 2) Registrar pending en backend
+    let ok = false;
+    try {
+      const res = await fetch(`${process.env.API_URL}/api/bot/stars/pending`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.API_KEY,
+        },
+        body: JSON.stringify({
+          payload,
+          user_id: String(userId),
+          username: username || '',
+          amount_stars: PRECIO_STARS,
+        }),
+        signal: AbortSignal.timeout(8000),
       });
+      ok = res.ok;
+      if (!ok) {
+        const text = await res.text().catch(() => '');
+        logger.error({ status: res.status, text }, 'stars/pending: respuesta no OK');
+      }
+    } catch (err) {
+      logger.error({ err }, 'stars/pending: error de red');
+    }
+
+    if (!ok) {
+      // No enviamos factura: el usuario no debe pagar sin pending
+      await enviar(bot, chatId, msgError());
+      return;
+    }
+
+    // 3) Enviar factura Stars
+    await bot.sendInvoice(
+      chatId,
+      'Código Premium - 3 meses',
+      'Código de activación válido por 90 días para 2 NIEs. Pago único con Telegram Stars.',
+      payload,
+      STARS_CURRENCY,
+      [{ label: 'Código Premium', amount: PRECIO_STARS }],
+      { provider_token: '' } // obligatorio vacío para Stars
+    );
+
+    logger.info({ userId, payload }, '⭐ Factura Stars enviada');
   } catch (err) {
-    logger.error({ err, userId }, 'Error iniciando compra');
+    logger.error({ err, userId }, 'Error enviando factura Stars');
     await enviar(bot, chatId, msgError());
   }
 }

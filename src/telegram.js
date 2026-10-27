@@ -10,7 +10,6 @@ import {
   msgCodigoComprado,
 } from './handlers.js';
 
-// Texto de soporte local (por si no quieres exportarlo desde handlers.js)
 const SOPORTE = '🕐 Soporte: L-V de 9:00 a 18:00';
 
 let bot;
@@ -20,7 +19,7 @@ export function iniciarTelegram() {
 
   logger.info('✅ Bot de Telegram conectado');
 
-  // /start (con o sin parámetros)
+  // /start
   bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
@@ -34,9 +33,12 @@ export function iniciarTelegram() {
   // /codigo
   bot.onText(/\/(codigo|code)/, async (msg) => {
     await procesarComando(
-      bot, msg.chat.id, msg.from.id,
+      bot,
+      msg.chat.id,
+      msg.from.id,
       msg.from.username || msg.from.first_name || 'Usuario',
-      'codigo', null
+      'codigo',
+      null
     );
   });
 
@@ -47,12 +49,7 @@ export function iniciarTelegram() {
 
   // /install
   bot.onText(/\/(install|instalar)/, async (msg) => {
-    await procesarInstall(
-      bot,
-      msg.chat.id,
-      msg.from.id,
-      msg.from.username || msg.from.first_name || 'Usuario'
-    );
+    await procesarInstall(bot, msg.chat.id, msg.from.id, msg.from.username || msg.from.first_name || 'Usuario');
   });
 
   // /miscompras
@@ -62,22 +59,12 @@ export function iniciarTelegram() {
 
   // /descargar
   bot.onText(/\/descargar/, async (msg) => {
-    await procesarDescarga(
-      bot,
-      msg.chat.id,
-      msg.from.id,
-      msg.from.username || msg.from.first_name || 'Usuario'
-    );
+    await procesarDescarga(bot, msg.chat.id, msg.from.id, msg.from.username || msg.from.first_name || 'Usuario');
   });
 
-  // ⭐ COMANDO /stars
-  bot.onText(/\/stars/, async (msg) => {
-    await enviarFacturaStars(
-      bot,
-      msg.chat.id,
-      msg.from.id,
-      msg.from.username || msg.from.first_name || 'Usuario'
-    );
+  // /stars y /comprar (redirigidos a Stars)
+  bot.onText(/\/(stars|comprar)/, async (msg) => {
+    await enviarFacturaStars(bot, msg.chat.id, msg.from.id, msg.from.username || msg.from.first_name || 'Usuario');
   });
 
   // Mensajes de texto libre
@@ -86,59 +73,111 @@ export function iniciarTelegram() {
     if (!msg.text) return;
 
     await procesarMensaje(
-      bot, msg.chat.id, msg.from.id,
+      bot,
+      msg.chat.id,
+      msg.from.id,
       msg.from.username || msg.from.first_name || 'Usuario',
       msg.text
     );
   });
 
-  // ⭐ PRE-CHECKOUT: solo aprobar, NUNCA entregar nada aquí
+  // ⭐ PRE-CHECKOUT — solo validar y aprobar. NO se entrega nada aquí.
   bot.on('pre_checkout_query', async (query) => {
+    let respondido = false;
     try {
+      const userId = query.from?.id;
+      const payload = query.invoice_payload;
+
       logger.info(
-        { queryId: query.id, userId: query.from.id, payload: query.invoice_payload, amount: query.total_amount },
+        { queryId: query.id, userId, payload, amount: query.total_amount, currency: query.currency },
         '⭐ Pre-checkout recibido'
       );
 
-      // Verificar que el payload existe en Supabase y está pending
-      const res = await fetch(
-        `${process.env.API_URL}/api/bot/stars/verificar-pending?payload=${encodeURIComponent(query.invoice_payload)}`,
-        { headers: { 'x-api-key': process.env.API_KEY } }
-      );
-
-      if (!res.ok) {
-        logger.error({ queryId: query.id }, 'Pre-checkout: payload no válido');
+      if (!userId || !payload) {
         await bot.answerPreCheckoutQuery(query.id, false, {
-          error_message: 'El pago no es válido o ha expirado. Inténtalo de nuevo con /stars.',
+          error_message: 'El pago no es válido. Inténtalo de nuevo con /stars.',
         });
+        respondido = true;
         return;
       }
 
-      const data = await res.json();
-      if (!data.valido) {
-        logger.error({ queryId: query.id, data }, 'Pre-checkout: payload no válido');
+      // Moneda: Stars = XTR
+      if (query.currency && query.currency !== 'XTR') {
         await bot.answerPreCheckoutQuery(query.id, false, {
-          error_message: 'El pago no es válido o ha expirado. Inténtalo de nuevo con /stars.',
+          error_message: 'Moneda no soportada.',
         });
+        respondido = true;
         return;
       }
 
-      // ✅ Aprobar el pago (pero NO entregar nada aquí)
+      // Verificar pending Y que pertenece a este usuario
+      let data = null;
+      try {
+        const res = await fetch(
+          `${process.env.API_URL}/api/bot/stars/verificar-pending?payload=${encodeURIComponent(payload)}&user_id=${encodeURIComponent(userId)}`,
+          {
+            headers: { 'x-api-key': process.env.API_KEY },
+            signal: AbortSignal.timeout(8000),
+          }
+        );
+        if (res.ok) data = await res.json();
+        else logger.error({ status: res.status, queryId: query.id }, 'verificar-pending: respuesta no OK');
+      } catch (err) {
+        logger.error({ err, queryId: query.id }, 'verificar-pending: error de red');
+      }
+
+      if (!data?.valido) {
+        await bot.answerPreCheckoutQuery(query.id, false, {
+          error_message: 'El pago no es válido o ha expirado. Inténtalo de nuevo con /stars.',
+        });
+        respondido = true;
+        return;
+      }
+
+      // Verificación extra: el amount de Stars que mandó Telegram coincide con lo esperado
+      if (typeof data.amount_stars === 'number' && data.amount_stars !== query.total_amount) {
+        logger.error(
+          { queryId: query.id, esperado: data.amount_stars, recibido: query.total_amount },
+          'pre-checkout: amount no coincide'
+        );
+        await bot.answerPreCheckoutQuery(query.id, false, {
+          error_message: 'El importe del pago no coincide. Inténtalo de nuevo con /stars.',
+        });
+        respondido = true;
+        return;
+      }
+
       await bot.answerPreCheckoutQuery(query.id, true);
+      respondido = true;
       logger.info({ queryId: query.id }, '⭐ Pre-checkout aprobado');
     } catch (err) {
       logger.error({ err, queryId: query.id }, 'Error en pre-checkout');
-      await bot.answerPreCheckoutQuery(query.id, false, {
-        error_message: 'Error interno, inténtalo de nuevo.',
-      });
+      if (!respondido) {
+        try {
+          await bot.answerPreCheckoutQuery(query.id, false, {
+            error_message: 'Error interno, inténtalo de nuevo.',
+          });
+        } catch (e) {}
+      }
     }
   });
 
-  // ⭐ SUCCESSFUL_PAYMENT: aquí SÍ se entrega el código (después del pago confirmado)
+  // ⭐ SUCCESSFUL_PAYMENT — aquí sí se entrega el código
   bot.on('successful_payment', async (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
+    const chatId = msg.chat?.id;
+    const userId = msg.from?.id;
     const payment = msg.successful_payment;
+
+    if (
+      !chatId ||
+      !userId ||
+      !payment ||
+      !payment.invoice_payload ||
+      !payment.telegram_payment_charge_id
+    ) {
+      logger.error({ msg }, 'successful_payment malformado');
+      return;
+    }
 
     logger.info(
       {
@@ -151,8 +190,11 @@ export function iniciarTelegram() {
       '⭐ Pago Stars exitoso'
     );
 
+    const chargeId = payment.telegram_payment_charge_id;
+    let data = null;
+    let ok = false;
+
     try {
-      // Llamar al backend para que genere y guarde el código de forma atómica
       const res = await fetch(`${process.env.API_URL}/api/bot/stars/procesar-pago`, {
         method: 'POST',
         headers: {
@@ -162,66 +204,78 @@ export function iniciarTelegram() {
         body: JSON.stringify({
           payload: payment.invoice_payload,
           user_id: String(userId),
-          charge_id: payment.telegram_payment_charge_id,
+          charge_id: chargeId,
           amount: payment.total_amount,
           currency: payment.currency,
         }),
+        signal: AbortSignal.timeout(15000),
       });
+      data = await res.json().catch(() => null);
+      ok = res.ok && !!data?.success;
+      if (!ok) logger.error({ status: res.status, data, userId }, 'procesar-pago: fallo');
+    } catch (err) {
+      logger.error({ err, userId }, 'procesar-pago: error de red');
+    }
 
-      const data = await res.json();
-
-      if (!res.ok || !data.success) {
-        logger.error({ data, userId }, 'Error procesando pago Stars en backend');
-        await enviar(
-          bot,
+    if (!ok) {
+      // Mensaje directo (NO usar enviar() para que el error no se silencie)
+      try {
+        await bot.sendMessage(
           chatId,
           '⚠️ *PAGO RECIBIDO, PERO HAY UN PROBLEMA*\n\n' +
             'Hemos recibido tu pago, pero hubo un error al generar tu código.\n\n' +
             'Por favor, contacta con soporte con este ID de pago:\n' +
-            `\`${payment.telegram_payment_charge_id}\`\n\n` +
-            `${SOPORTE}`
+            `\`${chargeId}\`\n\n` +
+            `${SOPORTE}`,
+          { parse_mode: 'Markdown' }
         );
-        return;
+      } catch (e) {
+        logger.error({ err: e, userId, chargeId }, 'No se pudo avisar al usuario del fallo');
       }
+      return;
+    }
 
-      // ✅ Éxito: enviar el código al usuario
-      await enviar(bot, chatId, msgCodigoComprado(data.codigo));
+    // Enviar el código
+    try {
+      await bot.sendMessage(chatId, msgCodigoComprado(data.codigo), { parse_mode: 'Markdown' });
       logger.info({ userId, codigo: data.codigo }, '⭐ Código entregado por Stars');
-    } catch (err) {
-      logger.error({ err, userId }, 'Error procesando successful_payment');
-      await enviar(
-        bot,
-        chatId,
-        '⚠️ *PAGO RECIBIDO, PERO HAY UN PROBLEMA*\n\n' +
-          'Contacta con soporte con este ID de pago:\n' +
-          `\`${payment.telegram_payment_charge_id}\``
-      );
+    } catch (e) {
+      logger.error({ err: e, userId, chargeId, codigo: data.codigo }, 'Fallo enviando código al usuario');
+      // Intento de aviso alternativo sin Markdown
+      try {
+        await bot.sendMessage(
+          chatId,
+          `✅ Pago recibido. Tu código es: ${data.codigo}\n\nSi no lo ves bien, contacta con soporte indicando: ${chargeId}`
+        );
+      } catch (e2) {}
     }
   });
 
-  // Callback queries (LOS BOTONES)
+  // Callback queries (botones)
   bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    const userId = query.from.id;
-    const username = query.from.username || query.from.first_name || 'Usuario';
+    const chatId = query.message?.chat?.id;
+    const userId = query.from?.id;
+    const username = query.from?.username || query.from?.first_name || 'Usuario';
     const data = query.data;
 
     logger.info({ userId, data }, '🔘 Callback query (Botón pulsado)');
 
-    // Quitar el "relojito" de carga del botón
-    await bot.answerCallbackQuery(query.id);
+    try {
+      await bot.answerCallbackQuery(query.id);
+    } catch (e) {
+      logger.warn({ err: e }, 'answerCallbackQuery falló');
+    }
 
-    if (data === 'comprar') {
-      await procesarComando(bot, chatId, userId, username, 'comprar', null);
+    if (!chatId || !userId) return;
+
+    if (data === 'comprar' || data === 'stars') {
+      await enviarFacturaStars(bot, chatId, userId, username);
     } else if (data === 'ayuda') {
       await procesarComando(bot, chatId, userId, username, 'ayuda', null);
     } else if (data === 'descargar') {
       await procesarDescarga(bot, chatId, userId, username);
     } else if (data === 'install') {
       await procesarInstall(bot, chatId, userId, username);
-    } else if (data === 'stars') {
-      // ⭐ NUEVO: botón "⭐ Pagar con Stars"
-      await enviarFacturaStars(bot, chatId, userId, username);
     }
   });
 
