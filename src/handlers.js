@@ -599,16 +599,15 @@ export async function enviarFacturaStars(bot, chatId, userId, username) {
     }
 
     // 3) Enviar factura Stars
-    await bot.sendInvoice(
-      chatId,
-      'Código Premium - 3 meses',
-      'Código de activación válido por 90 días para 2 NIEs. Pago único con Telegram Stars.',
-      payload,
-      STARS_CURRENCY,
-      [{ label: 'Código Premium', amount: PRECIO_STARS }],
-      { provider_token: '' } // obligatorio vacío para Stars
-    );
-
+   await bot.sendInvoice(
+  chatId,
+  'Código Premium - 3 meses',
+  'Código de activación válido por 90 días para 2 NIEs. Pago único con Telegram Stars.',
+  payload,
+  '',                                                        // 5º providerToken (VACÍO para Stars)
+  'XTR',                                                     // 6º currency (string)
+  [{ label: 'Código Premium', amount: PRECIO_STARS }]        // 7º prices
+);
     logger.info({ userId, payload }, '⭐ Factura Stars enviada');
   } catch (err) {
     logger.error({ err, userId }, 'Error enviando factura Stars');
