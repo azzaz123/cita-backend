@@ -395,6 +395,8 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
             [{ text: '🎬 Ver tutorial de instalación', callback_data: 'install' }],
             [{ text: `⭐ Comprar código - ${PRECIO}`, callback_data: 'stars' }],
             [{ text: '📥 Descargar app', callback_data: 'descargar' }],
+            [{ text: 'ℹ️ Ayuda', callback_data: 'ayuda' }],  // ← NUEVO
+
           ],
         },
       });
@@ -417,6 +419,8 @@ export async function procesarComando(bot, chatId, userId, username, comando, pa
               [{ text: '🎬 Ver tutorial de instalación', callback_data: 'install' }],
               [{ text: '⭐ Comprar código', callback_data: 'stars' }],
               [{ text: '📥 Descargar app', callback_data: 'descargar' }],
+              [{ text: 'ℹ️ Ayuda', callback_data: 'ayuda' }],  // ← NUEVO
+
             ],
           },
         });
